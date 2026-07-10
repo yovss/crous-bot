@@ -133,7 +133,7 @@ def main():
     # 🌟 Add the background job 🌟
     # interval=300 sets it to check every 300 seconds (5 mins)
     # first=10 tells it to do the very first check 10 seconds after the bot boots up
-    app.job_queue.run_repeating(check_rooms, interval=300, first=10)
+    app.job_queue.run_repeating(check_rooms, interval=5, first=1)
 
     print("🤖 Bot started...")
     
