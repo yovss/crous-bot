@@ -9,12 +9,10 @@ SEARCH_URL = f"{BASE_URL}/tools/47/search"
 async def get_available_rooms():
     rooms = []
     seen = set()
-    page = 1  # Start at page 1
+    page = 1
 
-    # Added a timeout to prevent hanging connections
     async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
         while True:
-            # Add the ?page=X query to the URL
             url = f"{SEARCH_URL}?page={page}"
             
             try:
@@ -22,41 +20,55 @@ async def get_available_rooms():
                 response.raise_for_status()
             except Exception as e:
                 print(f"Error fetching page {page}: {e}")
-                break  # Stop if the website is down or gives a 404
+                break
 
             soup = BeautifulSoup(response.text, "html.parser")
-            links = soup.select('a[href*="/accommodations/"]')
+            
+            # --- NEW METHOD: Find all accommodation cards first ---
+            cards = soup.select('.fr-card')
 
-            # If no accommodation links are found on this page, we reached the end!
-            if not links:
+            # If no cards are found, we reached the last page
+            if not cards:
                 break
 
             new_rooms_on_page = False
 
-            for link in links:
+            for card in cards:
+                # 1. Find the link inside the card
+                link = card.select_one('a[href*="/accommodations/"]')
+                if not link:
+                    continue
+
                 href = link.get("href")
                 if not href or href in seen:
                     continue
 
-                # We found a completely new room
                 new_rooms_on_page = True
                 seen.add(href)
 
+                # 2. Extract Title
+                title = link.get_text(strip=True)
+                
+                # 3. Extract Location (City / Address)
+                desc_elem = card.select_one('.fr-card__desc')
+                location = desc_elem.get_text(strip=True) if desc_elem else "Lieu inconnu"
+
+                # 4. Extract Price (Using p.fr-badge to avoid clicking the heart button)
+                price_elem = card.select_one('p.fr-badge')
+                price = price_elem.get_text(strip=True) if price_elem else "Prix inconnu"
+
+                # Save room
                 rooms.append({
-                    "title": link.get_text(strip=True),
-                    "price": "", 
+                    "title": title,
+                    "location": location,
+                    "price": price,
                     "url": BASE_URL + href,
                 })
 
-            # If the page only contained links we've already seen (sometimes 
-            # websites default to page 1 if you go out of bounds), stop looping.
             if not new_rooms_on_page:
                 break
 
-            # Move to the next page
             page += 1
-            
-            # Wait 1 second before fetching the next page so CROUS doesn't block your bot
             await asyncio.sleep(1)
 
     return rooms
