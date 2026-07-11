@@ -1,4 +1,5 @@
 import asyncio
+import re
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -19,11 +20,31 @@ from database import (
 )
 from scraper import get_available_rooms
 
+# --- HELPER FUNCTION FOR ZIP CODE MATCHING ---
+def matches_department(location_text, user_region):
+    if not user_region or not location_text:
+        return False
+    
+    # Find all 5-digit numbers in the location string
+    matches = re.findall(r'\b\d{5}\b', location_text)
+    
+    if matches:
+        # Take the last 5-digit number found (usually the zip code at the end of the address)
+        zip_code = matches[-1]
+        
+        # Check if the zip code starts with the user's input (e.g. '40000' starts with '40')
+        return zip_code.startswith(user_region.strip())
+        
+    return False
+
+# ==========================================
+# 1. BOT COMMAND HANDLERS
+# ==========================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     add_subscriber(chat_id)
-    await update.message.reply_text("✅ You are now subscribed to CROUS alerts!\nUse `/setregion <city>` to select your region.", parse_mode='Markdown')
+    await update.message.reply_text("✅ You are now subscribed to CROUS alerts!\nUse `/setregion <number>` to select your department code (e.g. 63).", parse_mode='Markdown')
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -32,14 +53,16 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def set_region(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ Please specify a region.\nExample: `/setregion paris`", parse_mode='Markdown')
+        await update.message.reply_text("❌ Please specify a department code.\nExample: `/setregion 63` or `/setregion 75`", parse_mode='Markdown')
         return
-    region = " ".join(context.args)
+    
+    region = context.args[0] # Take the first argument as the code
     chat_id = update.effective_chat.id
+    
     update_subscriber_region(chat_id, region)
     await update.message.reply_text(
-        f"✅ Your preferred region has been set to: *{region}*\n"
-        f"💡 _Tip: Use /restrict to hide all rooms that are not in this region._", 
+        f"✅ Your preferred department code has been set to: *{region}*\n"
+        f"💡 _Tip: Use /restrict to hide all rooms that are not in this department._", 
         parse_mode='Markdown'
     )
 
@@ -48,19 +71,19 @@ async def restrict_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subs = get_subscribers()
     user_data = subs.get(chat_id)
     if not user_data or not user_data.get('region'):
-        await update.message.reply_text("❌ Please set a region first using `/setregion <city>`.", parse_mode='Markdown')
+        await update.message.reply_text("❌ Please set a department code first using `/setregion 63`.", parse_mode='Markdown')
         return
     is_now_restricted = toggle_restrict(chat_id)
     region = user_data['region']
     if is_now_restricted:
-        await update.message.reply_text(f"🔒 Restriction *ENABLED*.\nYou will now ONLY receive notifications and see rooms in *{region}*.", parse_mode='Markdown')
+        await update.message.reply_text(f"🔒 Restriction *ENABLED*.\nYou will now ONLY receive notifications and see rooms in department *{region}*.", parse_mode='Markdown')
     else:
         await update.message.reply_text(f"🔓 Restriction *DISABLED*.\nYou will now see all rooms.", parse_mode='Markdown')
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subscribers = len(get_subscribers())
     await update.message.reply_text(
-        f"🤖 CROUS Notifier\n\nCommands:\n/start - Subscribe\n/stop - Unsubscribe\n/setregion <city> - Select a region\n/restrict - Hide rooms not in your region\n/help - Show help\n/test - Test the bot\n/showall - Show all available rooms\n\nSubscribers: {subscribers}"
+        f"🤖 CROUS Notifier\n\nCommands:\n/start - Subscribe\n/stop - Unsubscribe\n/setregion <code> - Select a department code (e.g., 63)\n/restrict - Hide rooms outside your code\n/help - Show help\n/test - Test the bot\n/showall - Show all available rooms\n\nSubscribers: {subscribers}"
     )
 
 async def showall(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -79,27 +102,31 @@ async def showall(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     rooms_to_show = []
     for room in rooms:
-        # Search inside BOTH the Title and the Location string
-        search_text = f"{room['title']} {room.get('location', '')}".lower()
-        matches_region = user_region and (user_region.lower() in search_text)
+        # Check against the new department code logic
+        location_text = room.get('location', '')
+        matches_region = matches_department(location_text, user_region)
         
         if user_region and is_restricted and not matches_region:
             continue
         rooms_to_show.append((room, matches_region))
 
     if not rooms_to_show:
-        await update.message.reply_text(f"❌ No rooms currently available matching your restricted region: *{user_region}*", parse_mode='Markdown')
+        await update.message.reply_text(f"❌ No rooms currently available matching your department code: *{user_region}*", parse_mode='Markdown')
         return
 
     await update.message.reply_text(f"🏠 {len(rooms_to_show)} room(s) to show:")
     for room, matches_region in rooms_to_show:
-        region_tag = f"✅ Matches your region: {user_region}\n" if matches_region else (f"⚠️ Not in {user_region}\n" if user_region else "")
+        region_tag = f"✅ Matches department: {user_region}\n" if matches_region else (f"⚠️ Not in {user_region}\n" if user_region else "")
         message = f"🏢 {room['title']}\n📍 {room.get('location', 'Unknown')}\n💶 {room['price']}\n{region_tag}\n{room['url']}"
         await update.message.reply_text(message, disable_web_page_preview=True)
 
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Bot is working!")
 
+
+# ==========================================
+# 2. BACKGROUND CHECKER 
+# ==========================================
 
 async def check_rooms(context: ContextTypes.DEFAULT_TYPE):
     print("Checking for new and removed CROUS rooms...")
@@ -118,7 +145,6 @@ async def check_rooms(context: ContextTypes.DEFAULT_TYPE):
         for url, room in current_urls.items():
             if url not in active_in_db:
                 new_rooms.append(room)
-            # Add or refresh room in DB, including its location!
             add_or_update_room(url, room['title'], room.get('location', ''), is_active=1)
 
         # 2. FIND REMOVED ROOMS
@@ -138,11 +164,12 @@ async def check_rooms(context: ContextTypes.DEFAULT_TYPE):
                     region_tag = ""
                     
                     if user_region:
-                        search_text = f"{room['title']} {room.get('location', '')}".lower()
-                        matches_region = user_region.lower() in search_text
+                        location_text = room.get('location', '')
+                        matches_region = matches_department(location_text, user_region)
+                        
                         if is_restricted and not matches_region:
                             continue
-                        region_tag = f"✅ Matches your region: {user_region}\n" if matches_region else f"⚠️ Not in {user_region}\n"
+                        region_tag = f"✅ Matches department: {user_region}\n" if matches_region else f"⚠️ Not in {user_region}\n"
 
                     message = f"🟢 *NEW CROUS ACCOMMODATION!*\n\n🏢 {room['title']}\n📍 {room.get('location', 'Unknown')}\n💶 {room['price']}\n{region_tag}\n🔗 {room['url']}"
 
@@ -160,8 +187,9 @@ async def check_rooms(context: ContextTypes.DEFAULT_TYPE):
                     is_restricted = user_data.get('is_restricted', False)
                     
                     if user_region:
-                        search_text = f"{room['title']} {room.get('location', '')}".lower()
-                        matches_region = user_region.lower() in search_text
+                        location_text = room.get('location', '')
+                        matches_region = matches_department(location_text, user_region)
+                        
                         if is_restricted and not matches_region:
                             continue
 
@@ -174,6 +202,10 @@ async def check_rooms(context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         print(f"An error occurred while checking for rooms: {e}")
+
+# ==========================================
+# 3. MAIN APPLICATION STARTUP
+# ==========================================
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
