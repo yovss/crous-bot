@@ -218,7 +218,7 @@ def main():
     app.add_handler(CommandHandler("test", test))
     app.add_handler(CommandHandler("showall", showall))
     
-    app.job_queue.run_repeating(check_rooms, interval=300, first=10)
+    app.job_queue.run_repeating(check_rooms, interval=5, first=5)
 
     print("🤖 Bot started...")
     app.run_polling()
